@@ -10,6 +10,17 @@ from telethon.errors import SessionPasswordNeededError
 from telethon.tl.types import PeerChannel
 
 # Настройки / Settings
+# Временная зона по умолчанию (можно изменить):
+# Примеры популярных зон:
+# Europe/Moscow (Москва), Europe/Kyiv (Киев), Asia/Tbilisi (Тбилиси)
+# Asia/Dubai (Дубай), Asia/Tokyo (Токио), Europe/London (Лондон)
+# America/New_York (Нью-Йорк), Asia/Shanghai (Шанхай)
+
+# Default timezone (can be changed):
+# Examples of popular timezones:
+# Europe/Moscow (Moscow), Europe/Kyiv (Kyiv), Asia/Tbilisi (Tbilisi)
+# Asia/Dubai (Dubai), Asia/Tokyo (Tokyo), Europe/London (London)
+# America/New_York (New York), Asia/Shanghai (Shanghai)
 DEFAULT_TZ = pytz.timezone('Europe/Moscow')
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(SCRIPT_DIR, 'config.ini')
