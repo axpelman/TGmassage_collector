@@ -15,6 +15,7 @@ from telethon.tl.types import PeerChannel
 # Europe/Moscow (Москва), Europe/Kyiv (Киев), Asia/Tbilisi (Тбилиси)
 # Asia/Dubai (Дубай), Asia/Tokyo (Токио), Europe/London (Лондон)
 # America/New_York (Нью-Йорк), Asia/Shanghai (Шанхай)
+# что-то еще 
 
 # Default timezone (can be changed):
 # Examples of popular timezones:
