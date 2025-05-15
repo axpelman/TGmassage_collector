@@ -2,7 +2,7 @@ import os
 import logging
 import glob
 import time
-from datetime import datetime
+from datetime import datetime, time as dt_time, timedelta
 import pytz
 import pytesseract
 from PIL import Image, ImageEnhance, ImageFilter
@@ -27,6 +27,7 @@ MAX_LOG_SIZE = 5 * 1024 * 1024  # 5 МБ
 LOG_CHECK_INTERVAL = 3600  # Проверка каждые 3600 секунд (1 час)
 LOG_RETENTION_DAYS = 7  # Хранить логи 7 дней
 DELETE_AFTER_SECONDS = 10  # Удалять сообщения через 10 секунд
+ADMIN_USER_ID = 813325749  # Замените на ваш ID в Telegram для получения файлов
 
 # Настройки Tesseract OCR
 pytesseract.pytesseract.tesseract_cmd = r'E:\PYTHON\Jupyter_work\Эксперементы\Bot_dlya_TG_kopirovanie_soobsheniy\TG_message_collector\TG_prv_group_msg_collector\tesseract-ocr\tesseract.exe'
@@ -200,6 +201,45 @@ def get_daily_filename(chat_id: int, date: datetime) -> str:
     os.makedirs(chat_dir, exist_ok=True)
     return os.path.join(chat_dir, f"{date.year}-{RUS_MONTHS[date.month]}-{date.day}.txt")
 
+# ========== ОТПРАВКА ОТЧЕТА ==========
+async def send_daily_report(context: CallbackContext):
+    """Отправка ежедневного отчета за текущий день"""
+    if not ADMIN_USER_ID:
+        logging.warning("ADMIN_USER_ID не установлен, отправка отчета невозможна")
+        return
+    
+    now = datetime.now(DEFAULT_TZ)
+    today_str = now.strftime('%d.%m.%Y')
+    report_date = now.date()
+    
+    for chat_id_dir in os.listdir(OUTPUT_DIR):
+        chat_dir = os.path.join(OUTPUT_DIR, chat_id_dir)
+        if os.path.isdir(chat_dir):
+            filename = os.path.join(chat_dir, f"{report_date.year}-{RUS_MONTHS[report_date.month]}-{report_date.day}.txt")
+            if os.path.exists(filename):
+                try:
+                    with open(filename, 'rb') as f:
+                        await context.bot.send_document(
+                            chat_id=ADMIN_USER_ID,
+                            document=f,
+                            caption=f"Отчет за {today_str} из чата {chat_id_dir}"
+                        )
+                    logging.info(f"Отправлен отчет за {today_str} для чата {chat_id_dir}")
+                except Exception as e:
+                    logging.error(f"Ошибка отправки отчета для чата {chat_id_dir}: {e}")
+
+def schedule_daily_report(job_queue):
+    """Запланировать ежедневную отправку отчета"""
+    report_time = dt_time(23, 59, tzinfo=DEFAULT_TZ)
+    
+    job_queue.run_daily(
+        send_daily_report,
+        time=report_time,
+        days=(0, 1, 2, 3, 4, 5, 6),
+        name="daily_report"
+    )
+    logging.info(f"Ежедневная отправка отчета запланирована на {report_time.strftime('%H:%M')} по Москве")
+
 # ========== КОМАНДЫ БОТА ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
@@ -211,13 +251,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/start - показать это сообщение\n"
         "/collect - начать сбор сообщений\n"
         "/stop - остановить сбор сообщений\n\n"
-        "Я умею распознавать текст с изображений на русском и английском языках!"
+        "Я умею распознавать текст с изображений на русском и английском языках!\n"
+        "Ежедневно в 23:59 я буду присылать файл с собранными сообщениями за текущий день."
     )
     
-    # Удаляем команду /start пользователя
     await schedule_message_deletion(context, update.effective_chat.id, update.message.message_id)
     
-    # Отправляем ответ и планируем его удаление
     sent_message = await update.message.reply_text(help_text)
     await schedule_message_deletion(context, update.effective_chat.id, sent_message.message_id)
     
@@ -225,7 +264,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def collect_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Начало сбора сообщений"""
-    # Удаляем команду /collect пользователя
     await schedule_message_deletion(context, update.effective_chat.id, update.message.message_id)
     
     if not update.message or not update.effective_chat:
@@ -237,6 +275,7 @@ async def collect_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_title = chat.title or "ЛС"
     chat_id = chat.id
     now = datetime.now(DEFAULT_TZ)
+    today_str = now.strftime('%d.%m.%Y')
 
     try:
         filepath = get_daily_filename(chat_id, now)
@@ -248,7 +287,9 @@ async def collect_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         sent_message = await update.message.reply_text(
             f"✅ Сбор сообщений начат в чате '{chat_title}'\n"
-            f"📁 Сообщения сохраняются в: {filepath}"
+            f"📅 Сегодняшняя дата: {today_str}\n"
+            f"📁 Сообщения сохраняются в: {filepath}\n"
+            f"⏰ Отчет будет отправлен сегодня в 23:59"
         )
         await schedule_message_deletion(context, update.effective_chat.id, sent_message.message_id)
         
@@ -261,7 +302,6 @@ async def collect_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def stop_collecting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Остановка сбора сообщений"""
-    # Удаляем команду /stop пользователя
     await schedule_message_deletion(context, update.effective_chat.id, update.message.message_id)
     
     if 'collecting' in context.chat_data and context.chat_data['collecting']:
@@ -335,11 +375,14 @@ def main():
             application.add_handler(handler)
 
         job_queue = application.job_queue
+        
         job_queue.run_repeating(
             log_maintenance_job,
             interval=LOG_CHECK_INTERVAL,
             first=10
         )
+        
+        schedule_daily_report(job_queue)
 
         logging.info("Бот запускается...")
         print("Бот успешно запущен! Ожидайте сообщений...")
