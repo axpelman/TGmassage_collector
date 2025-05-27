@@ -26,8 +26,10 @@ LOG_FILE = os.path.join(SCRIPT_DIR, 'bot.log')
 MAX_LOG_SIZE = 5 * 1024 * 1024  # 5 МБ
 LOG_CHECK_INTERVAL = 3600  # Проверка каждые 3600 секунд (1 час)
 LOG_RETENTION_DAYS = 7  # Хранить логи 7 дней
+MESSAGE_RETENTION_DAYS = 7  # Хранить сообщения 7 дней
 DELETE_AFTER_SECONDS = 10  # Удалять сообщения через 10 секунд
 ADMIN_USER_ID = 813325749  # Замените на ваш ID в Telegram для получения файлов
+MAX_FILE_SIZE = 100 * 1024  # 100 КБ максимальный размер файла
 
 # Настройки Tesseract OCR
 pytesseract.pytesseract.tesseract_cmd = r'E:\PYTHON\Jupyter_work\Эксперементы\Bot_dlya_TG_kopirovanie_soobsheniy\TG_message_collector\TG_prv_group_msg_collector\tesseract-ocr\tesseract.exe'
@@ -117,6 +119,29 @@ async def process_message_content(update: Update):
     
     return "[медиа-сообщение]"
 
+def get_next_filename(base_path: str, extension: str = "txt") -> str:
+    """Получить следующее имя файла с номером, если файл слишком большой"""
+    counter = 1
+    while True:
+        if counter == 1:
+            filename = f"{base_path}.{extension}"
+        else:
+            filename = f"{base_path}-{counter}.{extension}"
+        
+        # Если файл не существует или его размер меньше максимального, возвращаем его
+        if not os.path.exists(filename) or os.path.getsize(filename) < MAX_FILE_SIZE:
+            return filename
+        
+        counter += 1
+
+def get_daily_filename(chat_id: int, date: datetime) -> str:
+    """Генерация имени файла для дневного сбора с учетом размера"""
+    chat_dir = os.path.join(OUTPUT_DIR, str(chat_id))
+    os.makedirs(chat_dir, exist_ok=True)
+    
+    base_name = os.path.join(chat_dir, f"{date.year}-{RUS_MONTHS[date.month]}-{date.day}")
+    return get_next_filename(base_name)
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка всех входящих сообщений"""
     if not update.message or not update.effective_chat:
@@ -132,16 +157,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     content = await process_message_content(update)
     
     forward_info = ""
+    original_date_info = ""
     if update.message.forward_origin:
         origin = update.message.forward_origin
+        # Добавляем информацию о дате оригинального сообщения
+        if hasattr(origin, 'date'):
+            original_date = origin.date.astimezone(DEFAULT_TZ)
+            original_date_info = f" | Оригинальное сообщение: {original_date.strftime('%d.%m.%Y %H:%M')}"
+        
         if origin.type == "user":
-            forward_info = f" (переслано от: {origin.sender_user.full_name}, ID: {origin.sender_user.id})"
+            forward_info = f" (переслано от: {origin.sender_user.full_name}, ID: {origin.sender_user.id}{original_date_info})"
         elif origin.type == "chat":
-            forward_info = f" (переслано из чата: {origin.sender_chat.title}, ID: {origin.sender_chat.id})"
+            forward_info = f" (переслано из чата: {origin.sender_chat.title}, ID: {origin.sender_chat.id}{original_date_info})"
         elif origin.type == "channel":
-            forward_info = f" (переслано из канала: {origin.sender_chat.title}, ID: {origin.sender_chat.id})"
+            forward_info = f" (переслано из канала: {origin.sender_chat.title}, ID: {origin.sender_chat.id}{original_date_info})"
         elif origin.type == "hidden_user":
-            forward_info = f" (переслано от: {origin.sender_user_name})"
+            forward_info = f" (переслано от: {origin.sender_user_name}{original_date_info})"
     
     user_name = user.full_name if user else "Аноним"
     timestamp = msg_date.strftime('%d.%m.%Y %H:%M')
@@ -195,12 +226,6 @@ def get_bot_token():
         logging.error(f"Ошибка получения токена: {e}")
         raise
 
-def get_daily_filename(chat_id: int, date: datetime) -> str:
-    """Генерация имени файла для дневного сбора"""
-    chat_dir = os.path.join(OUTPUT_DIR, str(chat_id))
-    os.makedirs(chat_dir, exist_ok=True)
-    return os.path.join(chat_dir, f"{date.year}-{RUS_MONTHS[date.month]}-{date.day}.txt")
-
 # ========== ОТПРАВКА ОТЧЕТА ==========
 async def send_daily_report(context: CallbackContext):
     """Отправка ежедневного отчета за текущий день"""
@@ -215,18 +240,30 @@ async def send_daily_report(context: CallbackContext):
     for chat_id_dir in os.listdir(OUTPUT_DIR):
         chat_dir = os.path.join(OUTPUT_DIR, chat_id_dir)
         if os.path.isdir(chat_dir):
-            filename = os.path.join(chat_dir, f"{report_date.year}-{RUS_MONTHS[report_date.month]}-{report_date.day}.txt")
-            if os.path.exists(filename):
-                try:
-                    with open(filename, 'rb') as f:
-                        await context.bot.send_document(
-                            chat_id=ADMIN_USER_ID,
-                            document=f,
-                            caption=f"Отчет за {today_str} из чата {chat_id_dir}"
-                        )
-                    logging.info(f"Отправлен отчет за {today_str} для чата {chat_id_dir}")
-                except Exception as e:
-                    logging.error(f"Ошибка отправки отчета для чата {chat_id_dir}: {e}")
+            # Ищем все файлы за текущую дату (основной и дополнительные)
+            base_filename = f"{report_date.year}-{RUS_MONTHS[report_date.month]}-{report_date.day}"
+            files_to_send = sorted(
+                [f for f in os.listdir(chat_dir) if f.startswith(base_filename)],
+                key=lambda x: (
+                    int(x.split('-')[-1].split('.')[0]) 
+                    if x.split('-')[-1].split('.')[0].isdigit() 
+                    else 0
+                )
+            )
+            
+            if files_to_send:
+                for filename in files_to_send:
+                    filepath = os.path.join(chat_dir, filename)
+                    try:
+                        with open(filepath, 'rb') as f:
+                            await context.bot.send_document(
+                                chat_id=ADMIN_USER_ID,
+                                document=f,
+                                caption=f"Отчет за {today_str} из чата {chat_id_dir} ({filename})"
+                            )
+                        logging.info(f"Отправлен отчет {filename} за {today_str} для чата {chat_id_dir}")
+                    except Exception as e:
+                        logging.error(f"Ошибка отправки отчета {filename} для чата {chat_id_dir}: {e}")
 
 def schedule_daily_report(job_queue):
     """Запланировать ежедневную отправку отчета"""
@@ -288,8 +325,9 @@ async def collect_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sent_message = await update.message.reply_text(
             f"✅ Сбор сообщений начат в чате '{chat_title}'\n"
             f"📅 Сегодняшняя дата: {today_str}\n"
-            f"📁 Сообщения сохраняются в: {filepath}\n"
-            f"⏰ Отчет будет отправлен сегодня в 23:59"
+            f"📁 Сообщения сохраняются в: {os.path.basename(filepath)}\n"
+            f"⏰ Отчет будет отправлен сегодня в 23:59\n"
+            f"📝 Макс. размер файла: {MAX_FILE_SIZE//1024} КБ"
         )
         await schedule_message_deletion(context, update.effective_chat.id, sent_message.message_id)
         
@@ -313,7 +351,7 @@ async def stop_collecting(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sent_message = await update.message.reply_text("ℹ️ Сбор не был активирован")
         await schedule_message_deletion(context, update.effective_chat.id, sent_message.message_id)
 
-# ========== УПРАВЛЕНИЕ ЛОГАМИ ==========
+# ========== УПРАВЛЕНИЕ ЛОГАМИ И ФАЙЛАМИ ==========
 def rotate_logs():
     """Ротация лог-файла при превышении размера"""
     try:
@@ -342,10 +380,44 @@ def cleanup_old_logs():
     except Exception as e:
         logging.error(f"Ошибка очистки старых логов: {e}")
 
-async def log_maintenance_job(context: CallbackContext):
-    """Периодическое обслуживание логов"""
+def cleanup_old_message_files():
+    """Удаление старых файлов с сообщениями"""
+    try:
+        now = time.time()
+        cutoff = now - MESSAGE_RETENTION_DAYS * 86400
+        
+        if not os.path.exists(OUTPUT_DIR):
+            return
+
+        for chat_id_dir in os.listdir(OUTPUT_DIR):
+            chat_dir = os.path.join(OUTPUT_DIR, chat_id_dir)
+            if os.path.isdir(chat_dir):
+                for filename in os.listdir(chat_dir):
+                    filepath = os.path.join(chat_dir, filename)
+                    if os.path.isfile(filepath):
+                        file_time = os.path.getmtime(filepath)
+                        if file_time < cutoff:
+                            try:
+                                os.unlink(filepath)
+                                logging.info(f"Удален старый файл сообщений: {filename}")
+                            except Exception as e:
+                                logging.error(f"Ошибка удаления {filename}: {e}")
+                
+                # Если папка пустая, удаляем её
+                if not os.listdir(chat_dir):
+                    try:
+                        os.rmdir(chat_dir)
+                        logging.info(f"Удалена пустая папка: {chat_id_dir}")
+                    except Exception as e:
+                        logging.error(f"Ошибка удаления пустой папки {chat_id_dir}: {e}")
+    except Exception as e:
+        logging.error(f"Ошибка очистки старых файлов сообщений: {e}")
+
+async def maintenance_job(context: CallbackContext):
+    """Периодическое обслуживание (логи + файлы сообщений)"""
     rotate_logs()
     cleanup_old_logs()
+    cleanup_old_message_files()
 
 # ========== ЗАПУСК БОТА ==========
 def main():
@@ -377,7 +449,7 @@ def main():
         job_queue = application.job_queue
         
         job_queue.run_repeating(
-            log_maintenance_job,
+            maintenance_job,
             interval=LOG_CHECK_INTERVAL,
             first=10
         )
