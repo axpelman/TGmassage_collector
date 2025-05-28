@@ -32,7 +32,7 @@ ADMIN_USER_ID = 813325749  # Замените на ваш ID в Telegram для 
 MAX_FILE_SIZE = 100 * 1024  # 100 КБ максимальный размер файла
 
 # Настройки Tesseract OCR
-pytesseract.pytesseract.tesseract_cmd = r'E:\PYTHON\Jupyter_work\Эксперементы\Bot_dlya_TG_kopirovanie_soobsheniy\TG_message_collector\TG_prv_group_msg_collector\tesseract-ocr\tesseract.exe'
+pytesseract.pytesseract.tesseract_cmd = r'........\TG_prv_group_msg_collector\tesseract-ocr\tesseract.exe'
 
 # Словарь русских месяцев
 RUS_MONTHS = {
